@@ -105,3 +105,30 @@ This v8 package is a meaningful step toward Milestone 1 and 2, but it is not yet
    - HSTAR evaporators
    - Wieland flooded/spray evaporator examples
 5. True compressor map database import and interpolation.
+
+
+## v9 update
+
+- Fixed the Drawings tab so Mermaid diagrams render visually inside Streamlit instead of only showing Mermaid source code.
+- Added expandable Mermaid source blocks and `.mmd` download buttons for the refrigerant circuit and control flow diagrams.
+
+If the diagram still does not render, check whether your network/browser blocks `cdn.jsdelivr.net`, because the Streamlit component loads Mermaid JS from that CDN. The Mermaid source remains available in the expander and can be pasted into Mermaid Live Editor.
+
+## v10 condenser update
+
+The condenser module now exposes baffle spacing and baffle cut in the Streamlit input panel:
+
+- `Condenser baffle spacing override (mm, 0 = auto)`
+- `Condenser baffle cut (%)`
+
+The condenser report now also includes a preliminary shell-side refrigerant/Freon pressure-drop estimate:
+
+- `shell_ref_dp_kpa`
+- `shell_ref_dp_status`
+- `shell_ref_mdot_kg_s_est`
+- `shell_ref_mass_velocity_kg_m2s`
+- `shell_ref_velocity_m_s`
+- `shell_ref_re`
+- `shell_ref_baffle_spaces`
+
+This is still a screening value and must be verified by detailed shell-side two-phase Bell-Delaware/nozzle pressure-drop design before manufacture.

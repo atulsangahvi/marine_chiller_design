@@ -1,5 +1,6 @@
 import streamlit as st
 import pandas as pd
+import streamlit.components.v1 as components
 
 from modules.thermo import REFS, pressure_text
 from modules.compressor import discharge_temperature, compressor_summary_table, estimate_operating_point, COMPRESSOR_TYPES
@@ -13,7 +14,7 @@ from modules.valves import expansion_valve_screening, solenoid_filter_drier_scre
 from modules.vessels import receiver_sizing, suction_accumulator_guidance, vessels_table
 from modules.safety import safety_checks
 from modules.bom import base_bom
-from modules.drawings import refrigerant_mermaid, control_mermaid
+from modules.drawings import refrigerant_mermaid, control_mermaid, mermaid_html
 from modules.reports import make_excel_report, make_pdf_report
 from data.tube_library import filter_tubes, WIELAND_GEWA_C, tube_dataframe
 from data.materials import MATERIALS
@@ -32,7 +33,7 @@ from modules.manufacturing_package import make_csv_zip
 from modules.design_optimizer import condenser_geometry_optimizer
 from modules.validation_benchmarks import run_benchmarks
 
-APP_VERSION = "marine-chiller-suite-v8-milestone-1-2-core-db"
+APP_VERSION = "marine-chiller-suite-v9-mermaid-render-fix"
 
 st.set_page_config(page_title="Marine Chiller Design Suite", layout="wide")
 
@@ -137,6 +138,11 @@ with tabs[1]:
         shell_thk = st.number_input("Estimated shell thickness (mm)", 3.0, 30.0, 6.0, step=0.5)
     with c4:
         mult = st.number_input("Shell-side enhanced condensation multiplier", 1.0, 5.0, 2.5, step=0.1)
+        baffle_spacing_override = st.number_input("Condenser baffle spacing override (mm, 0 = auto)", 0.0, 1000.0, 0.0, step=5.0)
+        baffle_cut_pct = st.number_input("Condenser baffle cut (%)", 15.0, 45.0, 25.0, step=1.0)
+
+    baffle_spacing_for_calc = baffle_spacing_override if baffle_spacing_override > 0 else None
+    st.caption("Baffle spacing affects shell-side refrigerant velocity/pressure drop and shell-side HTC. Auto estimate is shown in results; override it here when you want to study spacing manually.")
 
     tubes = filter_tubes(water_type, od_filter)
     if not tubes:
@@ -146,16 +152,16 @@ with tabs[1]:
         tube_names = [t["name"] for t in tubes]
         tname = st.selectbox("Tube from library", tube_names)
         tube = next(t for t in tubes if t["name"] == tname)
-        cond_res = evaluate_condenser(heat_rejection_kw, water_type, cw_in, cw_out, n_tubes, tube_passes, tube_length_m, tube, mult, pitch_ratio, shell_thk, condensing_temp_c=cond_c)
+        cond_res = evaluate_condenser(heat_rejection_kw, water_type, cw_in, cw_out, n_tubes, tube_passes, tube_length_m, tube, mult, pitch_ratio, shell_thk, condensing_temp_c=cond_c, refrigerant=ref, baffle_spacing_mm=baffle_spacing_for_calc, baffle_cut_pct=baffle_cut_pct)
         st.session_state.selected_tube = tube
         st.dataframe(pd.DataFrame([[k,v] for k,v in cond_res.items() if k != "tube"], columns=["Parameter","Value"]), hide_index=True, use_container_width=True)
     else:
-        df_auto = auto_select_tubes(heat_rejection_kw, water_type, cw_in, cw_out, n_tubes, tube_passes, tube_length_m, od_filter=od_filter, condensing_htc_multiplier=mult, pitch_ratio=pitch_ratio, shell_thk_mm=shell_thk, condensing_temp_c=cond_c)
+        df_auto = auto_select_tubes(heat_rejection_kw, water_type, cw_in, cw_out, n_tubes, tube_passes, tube_length_m, od_filter=od_filter, condensing_htc_multiplier=mult, pitch_ratio=pitch_ratio, shell_thk_mm=shell_thk, condensing_temp_c=cond_c, refrigerant=ref, baffle_spacing_mm=baffle_spacing_for_calc, baffle_cut_pct=baffle_cut_pct)
         st.dataframe(df_auto, hide_index=True, use_container_width=True)
         if not df_auto.empty:
             best_name = df_auto.iloc[0]["tube"]
             tube = next(t for t in tubes if t["name"] == best_name)
-            cond_res = evaluate_condenser(heat_rejection_kw, water_type, cw_in, cw_out, n_tubes, tube_passes, tube_length_m, tube, mult, pitch_ratio, shell_thk, condensing_temp_c=cond_c)
+            cond_res = evaluate_condenser(heat_rejection_kw, water_type, cw_in, cw_out, n_tubes, tube_passes, tube_length_m, tube, mult, pitch_ratio, shell_thk, condensing_temp_c=cond_c, refrigerant=ref, baffle_spacing_mm=baffle_spacing_for_calc, baffle_cut_pct=baffle_cut_pct)
             st.session_state.selected_tube = tube
             st.success(f"Rank 1 selected for downstream report: {best_name}")
         else:
@@ -166,6 +172,12 @@ with tabs[1]:
         m2.metric("Possible heat rejection", f"{cond_res.get('q_possible_kw',0):.1f} kW")
         m3.metric("Shell OD", f"{cond_res.get('shell_od_mm',0):.0f} mm")
         m4.metric("Dry weight", f"{cond_res.get('dry_weight_kg',0):.0f} kg")
+        d1,d2,d3,d4 = st.columns(4)
+        d1.metric("Baffle spacing", f"{cond_res.get('baffle_spacing_mm',0):.0f} mm")
+        d2.metric("Baffle cut", f"{cond_res.get('baffle_cut_pct',0):.0f}%")
+        d3.metric("Freon shell ΔP", f"{cond_res.get('shell_ref_dp_kpa',0):.1f} kPa")
+        d4.metric("Freon shell ΔP status", str(cond_res.get('shell_ref_dp_status','CHECK')))
+        st.caption(cond_res.get('shell_ref_dp_note', ''))
         if cond_res.get("status") == "OK":
             st.success(cond_res.get("guidance", "Condenser screening OK."))
         else:
@@ -346,11 +358,21 @@ with tabs[7]:
 
 with tabs[8]:
     st.header("Drawings")
-    st.caption("Mermaid diagrams are included for quick engineering logic. Export/production CAD drawings should be prepared separately from these schedules.")
+    st.caption("The diagrams below are rendered from Mermaid source. Use the download buttons if you want to save or edit the Mermaid text separately. Production CAD drawings should still be prepared from the final approved schedules.")
+
     st.subheader("Refrigerant circuit")
-    st.code(refrigerant_mermaid(include_hgb=False, include_receiver=True), language="mermaid")
+    refrigerant_diagram = refrigerant_mermaid(include_hgb=False, include_receiver=True)
+    components.html(mermaid_html(refrigerant_diagram, "Refrigerant circuit"), height=420, scrolling=True)
+    with st.expander("Show Mermaid source - refrigerant circuit"):
+        st.code(refrigerant_diagram, language="mermaid")
+    st.download_button("Download refrigerant circuit Mermaid", refrigerant_diagram.encode("utf-8"), "refrigerant_circuit.mmd", "text/plain")
+
     st.subheader("Control flow")
-    st.code(control_mermaid(), language="mermaid")
+    control_diagram = control_mermaid()
+    components.html(mermaid_html(control_diagram, "Control flow"), height=520, scrolling=True)
+    with st.expander("Show Mermaid source - control flow"):
+        st.code(control_diagram, language="mermaid")
+    st.download_button("Download control flow Mermaid", control_diagram.encode("utf-8"), "control_flow.mmd", "text/plain")
 
 with tabs[9]:
     st.header("Reports")

@@ -62,6 +62,86 @@ def tube_dp_kpa(flow_velocity_m_s: float, id_mm: float, tube_length_m: float, pa
     return dp / 1000.0
 
 
+
+
+def estimate_shell_refrigerant_dp_kpa(q_rej_kw: float, refrigerant: str, condensing_temp_c: float,
+                                      shell_id_mm: float, bundle_od_mm: float, tube_length_m: float,
+                                      baffle_spacing_mm: float, baffle_cut_pct: float,
+                                      tube_count: int, tube_od_mm: float, pitch_ratio: float,
+                                      htc_multiplier: float = 1.0) -> dict:
+    """Preliminary shell-side refrigerant pressure-drop estimate for shell-side condensation.
+
+    This is a screening calculation. It estimates average condensing vapor/liquid
+    properties, equivalent crossflow area and number of baffle spaces. Final
+    manufacture still requires detailed Bell-Delaware/two-phase shell-side DP and
+    nozzle-loss verification.
+    """
+    try:
+        from CoolProp.CoolProp import PropsSI
+        T = float(condensing_temp_c) + 273.15
+        rho_v = float(PropsSI("D", "T", T, "Q", 1, refrigerant))
+        rho_l = float(PropsSI("D", "T", T, "Q", 0, refrigerant))
+        mu_v = float(PropsSI("V", "T", T, "Q", 1, refrigerant))
+        mu_l = float(PropsSI("V", "T", T, "Q", 0, refrigerant))
+        hfg = float(PropsSI("H", "T", T, "Q", 1, refrigerant) - PropsSI("H", "T", T, "Q", 0, refrigerant))
+    except Exception:
+        rho_v, rho_l, mu_v, mu_l, hfg = 35.0, 1050.0, 1.5e-5, 1.6e-4, 170000.0
+
+    mdot_ref = max(float(q_rej_kw) * 1000.0 / max(hfg, 1.0), 1e-6)
+    # Average mixture properties through condensing zone, weighted toward vapor for DP.
+    x_avg = 0.5
+    void = 1.0 / (1.0 + ((1.0 - x_avg) / max(x_avg, 1e-6)) * (rho_v / max(rho_l, 1e-9)) ** (2.0/3.0))
+    rho_mix = 1.0 / max(x_avg / max(rho_v, 1e-9) + (1.0 - x_avg) / max(rho_l, 1e-9), 1e-12)
+    mu_mix = x_avg * mu_v + (1.0 - x_avg) * mu_l
+
+    shell_id_m = max(float(shell_id_mm) / 1000.0, 0.05)
+    tube_od_m = max(float(tube_od_mm) / 1000.0, 0.003)
+    pitch_m = tube_od_m * max(float(pitch_ratio), 1.05)
+    b_m = max(float(baffle_spacing_mm) / 1000.0, 0.02)
+    cut = max(min(float(baffle_cut_pct), 45.0), 15.0) / 100.0
+
+    # Crossflow free area near shell centerline. This is approximate but responsive
+    # to baffle spacing, pitch and baffle cut.
+    pitch_clearance = max((pitch_m - tube_od_m) / max(pitch_m, 1e-9), 0.05)
+    cut_factor = max(0.35, 1.0 - 0.9 * cut)
+    bypass_factor = max(0.55, min(1.1, (shell_id_m - min(float(bundle_od_mm)/1000.0, shell_id_m*0.98)) / shell_id_m + 0.75))
+    area_cross = max(shell_id_m * b_m * pitch_clearance * cut_factor * bypass_factor, 1e-5)
+    mass_velocity = mdot_ref / area_cross
+    v_mix = mass_velocity / max(rho_mix, 1e-9)
+    re_shell = rho_mix * v_mix * tube_od_m / max(mu_mix, 1e-12)
+    if re_shell < 2300:
+        f = 64.0 / max(re_shell, 1.0)
+    else:
+        f = 0.35 * max(re_shell, 1.0) ** -0.20
+    n_cross = max(1.0, float(tube_length_m) / max(b_m, 1e-9))
+    two_phase_mult = 1.5 + 1.2 * max(float(htc_multiplier) - 1.0, 0.0) / 4.0
+    dp_core = f * n_cross * rho_mix * v_mix**2 / 2.0 * two_phase_mult
+    # Add entrance/exit/nozzle allowance as screening.
+    dp_nozzle = 0.8 * rho_mix * v_mix**2 / 2.0
+    dp_kpa = (dp_core + dp_nozzle) / 1000.0
+
+    if dp_kpa < 10:
+        status = "OK"
+        note = "Low preliminary shell-side refrigerant ΔP. Verify nozzle and detailed two-phase Bell-Delaware DP."
+    elif dp_kpa <= 30:
+        status = "CHECK"
+        note = "Moderate preliminary shell-side refrigerant ΔP. Check compressor condensing pressure allowance."
+    else:
+        status = "HIGH"
+        note = "High preliminary shell-side refrigerant ΔP. Increase baffle spacing/shell diameter, reduce baffle count, or reduce refrigerant mass velocity."
+
+    return {
+        "shell_ref_dp_kpa": dp_kpa,
+        "shell_ref_dp_status": status,
+        "shell_ref_dp_note": note,
+        "shell_ref_mdot_kg_s_est": mdot_ref,
+        "shell_ref_mass_velocity_kg_m2s": mass_velocity,
+        "shell_ref_velocity_m_s": v_mix,
+        "shell_ref_re": re_shell,
+        "shell_ref_crossflow_area_m2": area_cross,
+        "shell_ref_baffle_spaces": n_cross,
+    }
+
 def evaluate_condenser(q_rej_kw: float, water_type: str, water_in_c: float, water_out_c: float,
                        n_tubes: int, tube_passes: int, tube_length_m: float, tube: dict,
                        condensing_htc_multiplier: float = 2.5, pitch_ratio: float = 1.25,
@@ -136,6 +216,14 @@ def evaluate_condenser(q_rej_kw: float, water_type: str, water_in_c: float, wate
     bundle = estimate_bundle_diameter_mm(int(n_tubes), float(tube["od_mm"]), pitch_ratio, layout)
     sid = estimate_shell_id_mm(bundle)
     baffle_spacing_m = (float(baffle_spacing_mm)/1000.0) if baffle_spacing_mm else max(0.08, min(float(tube_length_m)/6.0, sid/1000.0/2.0))
+    shell_ref_dp = estimate_shell_refrigerant_dp_kpa(
+        float(q_rej_kw), refrigerant, float(condensing_temp_c), sid, bundle, float(tube_length_m),
+        baffle_spacing_m * 1000.0, float(baffle_cut_pct), int(n_tubes), float(tube["od_mm"]),
+        float(pitch_ratio), float(condensing_htc_multiplier)
+    )
+    # Keep this liquid-side Bell/Kern helper only as a geometry sensitivity indicator.
+    # For condenser service, the actual shell fluid is refrigerant, so the report now
+    # uses shell_ref_dp_* as the shell-side pressure-drop result.
     shell_calc = bell_delaware_screening(BellKernInput(mdot_kg_s=flow_m3h*rho/3600.0, rho=rho, mu=mu, cp=cp*1000.0, k=k_water, shell_id_m=sid/1000.0, tube_od_m=float(tube["od_mm"])/1000.0, pitch_m=float(tube["od_mm"])/1000.0*float(pitch_ratio), baffle_spacing_m=baffle_spacing_m, baffle_cut_pct=float(baffle_cut_pct), tube_count=int(n_tubes), layout=layout))
     sod = estimate_shell_od_mm(sid, shell_thk_mm)
     shell_weight = math.pi * (sid / 1000.0) * float(tube_length_m) * (float(shell_thk_mm) / 1000.0) * 7850.0
@@ -163,7 +251,17 @@ def evaluate_condenser(q_rej_kw: float, water_type: str, water_in_c: float, wate
         "re": re, "pr": pr, "hi_w_m2k": hi, "ho_plain_w_m2k": ho_plain, "ho_w_m2k": ho,
         "condensation_row_factor": cond_htc.get("row_factor", 1.0),
         "uo_w_m2k": uo, "area_m2": ao, "actual_area_ratio_est": (area_ratio_info or {}).get("area_ratio_actual_to_envelope", 1.0), "tubes_per_pass": tubes_per_pass,
-        "baffle_spacing_mm": baffle_spacing_m*1000.0, "bell_shell_water_velocity_ms": shell_calc.get("shell_velocity_ms", 0.0), "bell_shell_jc": shell_calc.get("shell_jc", 1.0), "bell_shell_jl": shell_calc.get("shell_jl", 1.0), "bell_shell_jb": shell_calc.get("shell_jb", 1.0),
+        "baffle_spacing_mm": baffle_spacing_m*1000.0, "baffle_cut_pct": float(baffle_cut_pct),
+        "shell_ref_dp_kpa": shell_ref_dp.get("shell_ref_dp_kpa", 0.0),
+        "shell_ref_dp_status": shell_ref_dp.get("shell_ref_dp_status", "CHECK"),
+        "shell_ref_dp_note": shell_ref_dp.get("shell_ref_dp_note", "Preliminary shell-side refrigerant pressure drop; verify by detailed design."),
+        "shell_ref_mdot_kg_s_est": shell_ref_dp.get("shell_ref_mdot_kg_s_est", 0.0),
+        "shell_ref_mass_velocity_kg_m2s": shell_ref_dp.get("shell_ref_mass_velocity_kg_m2s", 0.0),
+        "shell_ref_velocity_m_s": shell_ref_dp.get("shell_ref_velocity_m_s", 0.0),
+        "shell_ref_re": shell_ref_dp.get("shell_ref_re", 0.0),
+        "shell_ref_crossflow_area_m2": shell_ref_dp.get("shell_ref_crossflow_area_m2", 0.0),
+        "shell_ref_baffle_spaces": shell_ref_dp.get("shell_ref_baffle_spaces", 0.0),
+        "bell_geometry_jc": shell_calc.get("shell_jc", 1.0), "bell_geometry_jl": shell_calc.get("shell_jl", 1.0), "bell_geometry_jb": shell_calc.get("shell_jb", 1.0),
         "bundle_od_mm": bundle, "shell_id_mm": sid, "shell_od_mm": sod,
         "tube_weight_kg": tube_weight, "shell_weight_kg": shell_weight, "dry_weight_kg": dry_weight,
         "tube": tube["name"], "tube_material": tube.get("material", ""), "guidance": " ".join(guidance),
@@ -172,12 +270,15 @@ def evaluate_condenser(q_rej_kw: float, water_type: str, water_in_c: float, wate
 
 def auto_select_tubes(q_rej_kw, water_type, water_in_c, water_out_c, n_tubes, tube_passes, tube_length_m,
                       od_filter="All", condensing_htc_multiplier: float = 2.5, pitch_ratio: float = 1.25,
-                      shell_thk_mm: float = 6.0, condensing_temp_c: float = 45.0) -> pd.DataFrame:
+                      shell_thk_mm: float = 6.0, condensing_temp_c: float = 45.0,
+                      refrigerant: str = "R407C", baffle_spacing_mm: float | None = None,
+                      baffle_cut_pct: float = 25.0) -> pd.DataFrame:
     rows=[]
     for tube in filter_tubes(water_type, od_filter):
         r = evaluate_condenser(q_rej_kw, water_type, water_in_c, water_out_c, n_tubes, tube_passes, tube_length_m,
                                tube, condensing_htc_multiplier, pitch_ratio, shell_thk_mm,
-                               condensing_temp_c=condensing_temp_c)
+                               condensing_temp_c=condensing_temp_c, refrigerant=refrigerant,
+                               baffle_spacing_mm=baffle_spacing_mm, baffle_cut_pct=baffle_cut_pct)
         rows.append(r)
     df = pd.DataFrame(rows)
     if not df.empty:

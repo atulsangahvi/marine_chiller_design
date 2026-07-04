@@ -18,3 +18,25 @@ MON --> LIM{Approaching limit?}
 LIM -- Yes --> UNLOAD[Unload/reduce capacity/alarm]
 LIM -- No --> RUN[Continue running]
 """
+
+
+
+def mermaid_html(diagram: str, title: str = "Mermaid diagram") -> str:
+    """Return HTML that renders Mermaid in Streamlit components.
+
+    st.code(..., language='mermaid') only shows Mermaid source text in Streamlit.
+    This helper loads Mermaid JS and renders the diagram inside an iframe component.
+    """
+    safe_diagram = (diagram or "").replace("`", "&#96;")
+    return f"""
+    <div style=\"font-family: Arial, sans-serif;\">
+      <div class=\"mermaid\">
+{safe_diagram}
+      </div>
+      <script src=\"https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js\"></script>
+      <script>
+        mermaid.initialize({{ startOnLoad: true, securityLevel: 'loose', theme: 'default' }});
+      </script>
+      <noscript>{title}: JavaScript is required to render this Mermaid diagram.</noscript>
+    </div>
+    """
