@@ -1,4 +1,4 @@
-# Marine Chiller Design Suite v17
+# Marine Chiller Design Suite v20
 
 This build continues Milestone 1 (engineering calculation core) and Milestone 2 (engineering databases).
 
@@ -340,3 +340,63 @@ Retained and corrected:
 - condenser type selector retained in the condenser tab.
 
 Validation status: repository tests pass in the build environment. This remains an engineering design/screening suite and still needs supplier/manufacturer validation before production release.
+
+
+## v20 update — system balance solver, vibration screening and nozzle sizing (on the v18 base)
+
+Applied directly onto the user's v18 build (all v17/v18 corrections retained,
+including the no-CoolProp fallback paths in the compressor cycle model and the
+condenser three-zone split, the drawing render fix and the flooded-evaporator
+warning display). New tab **15 System Balance + Mech** plus three modules:
+
+### System balance-point solver (`modules/system_balance.py`)
+
+The component tabs size each exchanger at ASSUMED evaporating/condensing
+temperatures, but the assembled machine settles wherever the compressor,
+evaporator and condenser are simultaneously satisfied — that is what the FAT
+bench measures. `solve_balance_point()` balances the calibrated compressor
+cycle model against effectiveness models of both exchangers
+(eps = 1 - exp(-UA/C) on the phase-change side) by nested bisection on Te and
+Tc. Outputs balanced Te/Tc, actual capacity vs design, power, COP, discharge
+temperature, water leaving temperatures/approaches, and a diagnostic naming the
+bottleneck component when the plant cannot reach design. Feed it
+UA = Uo x Ao from the condenser/evaporator tabs (pre-filled from the condenser
+result), then re-run those tabs at the solved temperatures to confirm, since U
+varies with conditions. Works with the v18 no-CoolProp compressor fallback.
+
+### Tube vibration screening (`modules/vibration.py`)
+
+TEMA-style pre-manufacture checks on the mid-span between baffles: first-mode
+natural frequency (pinned-pinned; metal + bore fluid + hydrodynamic added
+mass), vortex-shedding lock-in ratio, and Connors fluid-elastic-instability
+critical velocity with margin. Material E/density covers Cu, CuNi 90/10 and
+70/30, Ti, Al-brass, SS316L and carbon steel. Not an HTRI analysis: inlet
+nozzle local velocity, end spans and U-bends need separate review.
+
+### Nozzle sizing (`modules/nozzles.py`)
+
+Selects standard DN sizes for hot-gas inlet, liquid outlet and water nozzles
+against TEMA RCB-4.6 momentum limits (rho*v^2 <= 2232 single phase, <= 744 for
+saturated/condensing vapor without an impingement plate); liquid outlet held
+<= 1.0 m/s, water nozzles 1-3 m/s. Flags when an impingement plate is
+required. Reinforcement pads, projections and nozzle loads remain ASME/TEMA
+mechanical design work.
+
+### App wiring in v20
+
+- Condenser tab passes the ACTUAL discharge temperature from the Compressor tab
+  (plus the entered subcooling) into the three-zone model instead of the +25 K
+  default.
+- Tab 15 pre-fills condenser UA and water flow from the Condenser tab result.
+- APP_VERSION bumped to marine-chiller-suite-v20-balance-vibration-nozzles.
+- New tests: tests/test_v20_balance_vibration_nozzles.py.
+
+These remain screening tools; validate against supplier software, test data,
+TEMA/ASME mechanical design and class-society requirements before manufacture.
+
+
+## v20 update
+- Replaced Mermaid diagrams with SVG drawing engine.
+- Retained v19 vibration/nozzle/system-balance improvements after review.
+- Added preliminary condenser and evaporator tubesheet thickness screening.
+- Added evaporator vibration screening in the mechanical tab.

@@ -9,6 +9,10 @@ from modules.condenser import evaluate_condenser, auto_select_tubes
 from modules.evaporator import shell_tube_evaporator_screening, air_cooled_dx_coil_screening, evaporator_table, correlation_audit_table, recommended_improvement_table
 from modules.flooded_evaporator import flooded_evaporator_design
 from modules.evaporative_condenser import evaporative_condenser_design
+from modules.system_balance import solve_balance_point, balance_table
+from modules.vibration import tube_vibration_screening, vibration_table
+from modules.mechanical import preliminary_tubesheet_screen, mechanical_screen_table
+from modules.nozzles import condenser_nozzle_set, nozzle_summary_table
 from modules.piping import water_piping_summary, refrigerant_line_check
 from modules.electrical import electrical_schedule
 from modules.controls import plc_logic_table
@@ -16,7 +20,7 @@ from modules.valves import expansion_valve_screening, solenoid_filter_drier_scre
 from modules.vessels import receiver_sizing, suction_accumulator_guidance, vessels_table
 from modules.safety import safety_checks
 from modules.bom import base_bom
-from modules.drawings import refrigerant_mermaid, control_mermaid, mermaid_html
+from modules.drawings import refrigerant_circuit_svg, control_flow_svg, shell_tube_section_svg, svg_html
 from modules.reports import make_excel_report, make_pdf_report
 from data.tube_library import filter_tubes, WIELAND_GEWA_C, tube_dataframe
 from data.materials import MATERIALS
@@ -35,7 +39,7 @@ from modules.manufacturing_package import make_csv_zip
 from modules.design_optimizer import condenser_geometry_optimizer
 from modules.validation_benchmarks import run_benchmarks
 
-APP_VERSION = "marine-chiller-suite-v18-drawing-render-fix"
+APP_VERSION = "marine-chiller-suite-v20-svg-drawings-mechanical"
 
 st.set_page_config(page_title="Marine Chiller Design Suite", layout="wide")
 
@@ -90,7 +94,7 @@ if "selected_tube" not in st.session_state:
 
 tabs = st.tabs([
     "1 Compressor", "2 Condenser", "3 Evaporator", "4 Pressure Switches", "5 Piping + Valves",
-    "6 Electrical + Controls", "7 Controller I/O + Alarms", "8 Safety + BOM", "9 Drawings", "10 Reports", "11 Compliance + QA", "12 Datasheets + Cost", "13 Service + FAT", "14 Evap Condenser"
+    "6 Electrical + Controls", "7 Controller I/O + Alarms", "8 Safety + BOM", "9 Drawings", "10 Reports", "11 Compliance + QA", "12 Datasheets + Cost", "13 Service + FAT", "14 Evap Condenser", "15 System Balance + Mech"
 ])
 
 with tabs[0]:
@@ -208,6 +212,14 @@ with tabs[1]:
         baffle_cut_pct = st.number_input("Condenser baffle cut (%)", 15.0, 45.0, 25.0, step=1.0)
 
     baffle_spacing_for_calc = baffle_spacing_override if baffle_spacing_override > 0 else None
+    # v19: feed the actual discharge temperature (from the Compressor tab result if
+    # available) into the condenser three-zone model instead of the +25 K default.
+    _disc_c = None
+    try:
+        if 'comp_res' in globals() and isinstance(comp_res, dict) and not comp_res.get("error"):
+            _disc_c = float(comp_res.get("t_discharge_c"))
+    except Exception:
+        _disc_c = None
     st.caption("Baffle spacing affects shell-side refrigerant velocity/pressure drop and shell-side HTC. Auto estimate is shown in results; override it here when you want to study spacing manually.")
 
     tubes = filter_tubes(water_type, od_filter)
@@ -218,16 +230,16 @@ with tabs[1]:
         tube_names = [t["name"] for t in tubes]
         tname = st.selectbox("Tube from library", tube_names)
         tube = next(t for t in tubes if t["name"] == tname)
-        cond_res = evaluate_condenser(heat_rejection_kw, water_type, cw_in, cw_out, n_tubes, tube_passes, tube_length_m, tube, mult, pitch_ratio, shell_thk, condensing_temp_c=cond_c, refrigerant=ref, baffle_spacing_mm=baffle_spacing_for_calc, baffle_cut_pct=baffle_cut_pct)
+        cond_res = evaluate_condenser(heat_rejection_kw, water_type, cw_in, cw_out, n_tubes, tube_passes, tube_length_m, tube, mult, pitch_ratio, shell_thk, condensing_temp_c=cond_c, refrigerant=ref, baffle_spacing_mm=baffle_spacing_for_calc, baffle_cut_pct=baffle_cut_pct, discharge_temp_c=_disc_c, subcool_k=subcool_k)
         st.session_state.selected_tube = tube
         st.dataframe(pd.DataFrame([[k,v] for k,v in cond_res.items() if k != "tube"], columns=["Parameter","Value"]), hide_index=True, use_container_width=True)
     else:
-        df_auto = auto_select_tubes(heat_rejection_kw, water_type, cw_in, cw_out, n_tubes, tube_passes, tube_length_m, od_filter=od_filter, condensing_htc_multiplier=mult, pitch_ratio=pitch_ratio, shell_thk_mm=shell_thk, condensing_temp_c=cond_c, refrigerant=ref, baffle_spacing_mm=baffle_spacing_for_calc, baffle_cut_pct=baffle_cut_pct)
+        df_auto = auto_select_tubes(heat_rejection_kw, water_type, cw_in, cw_out, n_tubes, tube_passes, tube_length_m, od_filter=od_filter, condensing_htc_multiplier=mult, pitch_ratio=pitch_ratio, shell_thk_mm=shell_thk, condensing_temp_c=cond_c, refrigerant=ref, baffle_spacing_mm=baffle_spacing_for_calc, baffle_cut_pct=baffle_cut_pct, discharge_temp_c=_disc_c, subcool_k=subcool_k)
         st.dataframe(df_auto, hide_index=True, use_container_width=True)
         if not df_auto.empty:
             best_name = df_auto.iloc[0]["tube"]
             tube = next(t for t in tubes if t["name"] == best_name)
-            cond_res = evaluate_condenser(heat_rejection_kw, water_type, cw_in, cw_out, n_tubes, tube_passes, tube_length_m, tube, mult, pitch_ratio, shell_thk, condensing_temp_c=cond_c, refrigerant=ref, baffle_spacing_mm=baffle_spacing_for_calc, baffle_cut_pct=baffle_cut_pct)
+            cond_res = evaluate_condenser(heat_rejection_kw, water_type, cw_in, cw_out, n_tubes, tube_passes, tube_length_m, tube, mult, pitch_ratio, shell_thk, condensing_temp_c=cond_c, refrigerant=ref, baffle_spacing_mm=baffle_spacing_for_calc, baffle_cut_pct=baffle_cut_pct, discharge_temp_c=_disc_c, subcool_k=subcool_k)
             st.session_state.selected_tube = tube
             st.success(f"Rank 1 selected for downstream report: {best_name}")
         else:
@@ -542,21 +554,27 @@ with tabs[7]:
 
 with tabs[8]:
     st.header("Drawings")
-    st.caption("The diagrams below are rendered from Mermaid source. Use the download buttons if you want to save or edit the Mermaid text separately. Production CAD drawings should still be prepared from the final approved schedules.")
+    st.caption("SVG schematics are generated directly by the app. They are stable in Streamlit and avoid Mermaid parser errors. Production CAD/DXF drawings must still be prepared from the final approved schedules.")
 
-    st.subheader("Refrigerant circuit")
-    refrigerant_diagram = refrigerant_mermaid(include_hgb=False, include_receiver=True)
-    components.html(mermaid_html(refrigerant_diagram, "Refrigerant circuit"), height=420, scrolling=True)
-    with st.expander("Show Mermaid source - refrigerant circuit"):
-        st.code(refrigerant_diagram, language="mermaid")
-    st.download_button("Download refrigerant circuit Mermaid", refrigerant_diagram.encode("utf-8"), "refrigerant_circuit.mmd", "text/plain")
+    st.subheader("Refrigerant circuit P&ID schematic")
+    refrigerant_svg = refrigerant_circuit_svg(include_hgb=False, include_receiver=True, evaporator_type="Selected evaporator")
+    components.html(svg_html(refrigerant_svg), height=430, scrolling=True)
+    st.download_button("Download refrigerant circuit SVG", refrigerant_svg.encode("utf-8"), "refrigerant_circuit.svg", "image/svg+xml")
 
-    st.subheader("Control flow")
-    control_diagram = control_mermaid()
-    components.html(mermaid_html(control_diagram, "Control flow"), height=520, scrolling=True)
-    with st.expander("Show Mermaid source - control flow"):
-        st.code(control_diagram, language="mermaid")
-    st.download_button("Download control flow Mermaid", control_diagram.encode("utf-8"), "control_flow.mmd", "text/plain")
+    st.subheader("Control sequence schematic")
+    control_svg = control_flow_svg()
+    components.html(svg_html(control_svg), height=500, scrolling=True)
+    st.download_button("Download control sequence SVG", control_svg.encode("utf-8"), "control_sequence.svg", "image/svg+xml")
+
+    st.subheader("Shell-and-tube section schematic")
+    hx_svg = shell_tube_section_svg("Shell-and-tube condenser / evaporator section", flooded=False)
+    components.html(svg_html(hx_svg), height=410, scrolling=True)
+    st.download_button("Download shell-and-tube section SVG", hx_svg.encode("utf-8"), "shell_tube_section.svg", "image/svg+xml")
+
+    st.subheader("Flooded evaporator section schematic")
+    flooded_svg = shell_tube_section_svg("Flooded shell-and-tube evaporator section", flooded=True)
+    components.html(svg_html(flooded_svg), height=410, scrolling=True)
+    st.download_button("Download flooded evaporator SVG", flooded_svg.encode("utf-8"), "flooded_evaporator_section.svg", "image/svg+xml")
 
 with tabs[9]:
     st.header("Reports")
@@ -727,3 +745,102 @@ with tabs[13]:
     st.info(str(evap_cond_res.get('guidance','')))
 
 st.caption("Preliminary engineering tool only. Final pressure vessel, electrical, refrigeration and marine compliance design must be checked by qualified engineers and equipment suppliers.")
+
+
+with tabs[14]:
+    st.header("System balance point and mechanical screening")
+    st.caption("The component tabs size each exchanger at ASSUMED temperatures. This tab solves where the assembled compressor + condenser + evaporator actually settle — the operating point you will measure at FAT.")
+
+    st.subheader("Balance-point solver")
+    b1, b2, b3 = st.columns(3)
+    with b1:
+        sb_evap_ua = st.number_input("Evaporator UA (kW/K) = Uo x Ao from Evaporator tab", 0.1, 500.0,
+                                     float(st.session_state.get("sb_evap_ua_default", 8.0)), step=0.5)
+        sb_chw_flow = st.number_input("Chilled water flow (m³/h)", 0.1, 2000.0, max(cooling_kw*0.172, 1.0), step=0.5)
+        sb_chw_in = st.number_input("Chilled water inlet (°C)", -5.0, 30.0, 12.0, step=0.5)
+    with b2:
+        sb_cond_ua = st.number_input("Condenser UA (kW/K) = Uo x Ao from Condenser tab", 0.1, 500.0,
+                                     float(cond_res.get("uo_w_m2k", 2000.0)) * float(cond_res.get("area_m2", 3.0)) / 1000.0 if isinstance(cond_res, dict) and cond_res else 6.0,
+                                     step=0.5)
+        sb_cw_flow = st.number_input("Condenser water flow (m³/h)",
+                                     0.1, 2000.0, float(cond_res.get("water_flow_m3h", 10.0)) if isinstance(cond_res, dict) and cond_res else 10.0, step=0.5)
+        sb_cw_in = st.number_input("Condenser water inlet (°C)", 0.0, 45.0, float(cw_in), step=0.5)
+    with b3:
+        sb_sh = st.number_input("Suction superheat (K)", 0.0, 25.0, float(superheat_k), step=0.5)
+        sb_sc = st.number_input("Liquid subcooling (K)", 0.0, 15.0, float(subcool_k), step=0.5)
+        st.caption(f"Compressor calibrated to design point: {cooling_kw:.1f} kW at {evap_c:.1f}/{cond_c:.1f} °C, {compressor_type}.")
+
+    sb = solve_balance_point(ref, compressor_type, cooling_kw, evap_c, cond_c,
+                             sb_evap_ua, sb_cond_ua, sb_chw_in, sb_chw_flow, sb_cw_in, sb_cw_flow,
+                             superheat_k=sb_sh, subcool_k=sb_sc)
+    if sb.get("status") == "ERROR":
+        st.error(sb.get("error", "Balance solver failed."))
+    else:
+        m1, m2, m3, m4 = st.columns(4)
+        m1.metric("Actual capacity", f"{sb['actual_cooling_capacity_kw']:.1f} kW", f"{sb['capacity_vs_design_pct']-100:+.1f}% vs design")
+        m2.metric("Balanced Tevap / Tcond", f"{sb['balanced_evaporating_temp_c']:.1f} / {sb['balanced_condensing_temp_c']:.1f} °C")
+        m3.metric("COP", f"{sb['cop']:.2f}")
+        m4.metric("Discharge temp", f"{sb['discharge_temp_c']:.1f} °C")
+        st.dataframe(balance_table(sb), hide_index=True, use_container_width=True)
+        if hasattr(sb, "get") and "fallback" in str(sb.get("notes","")).lower():
+            st.info("Compressor fallback model in use (no CoolProp in this runtime).")
+
+    st.subheader("Condenser tube vibration screening (TEMA-style)")
+    if isinstance(cond_res, dict) and cond_res and 'selected_tube' in st.session_state:
+        _t = st.session_state.selected_tube
+        vib = tube_vibration_screening(
+            tube_od_mm=float(_t.get("od_mm", 15.88)), tube_id_mm=float(_t.get("id_mm", 12.3)),
+            material=_t.get("material", "CuNi 90/10 C70600"),
+            baffle_spacing_mm=float(cond_res.get("baffle_spacing_mm", 200.0)),
+            shell_crossflow_velocity_ms=float(cond_res.get("shell_ref_velocity_m_s", 1.0)),
+            shell_fluid_density_kg_m3=200.0,  # mean condensing two-phase density; refine with detailed design
+            tube_side_fluid_density_kg_m3=1025.0 if "sea" in str(water_type).lower() else 1000.0,
+            pitch_ratio=float(pitch_ratio) if 'pitch_ratio' in globals() else 1.25,
+            service="condensing")
+        st.dataframe(vibration_table(vib), hide_index=True, use_container_width=True)
+        if vib["overall_status"] != "OK":
+            st.warning(vib["guidance"])
+        st.subheader("Condenser preliminary tubesheet thickness screening")
+        ts = preliminary_tubesheet_screen(
+            shell_id_mm=float(cond_res.get("shell_id_mm", cond_res.get("shell_id_mm_est", 250.0))),
+            tube_od_mm=float(_t.get("od_mm", 15.88)),
+            design_pressure_bar_g=float(st.number_input("Condenser design pressure for tubesheet screen (bar g)", 1.0, 45.0, 24.0, step=0.5, key="cond_ts_dp")),
+            corrosion_allowance_mm=float(st.number_input("Condenser tubesheet corrosion allowance (mm)", 0.0, 6.0, 1.5, step=0.5, key="cond_ts_ca")),
+        )
+        st.dataframe(mechanical_screen_table(ts, vib), hide_index=True, use_container_width=True)
+    else:
+        st.info("Run the Condenser tab first to enable vibration and tubesheet screening.")
+
+    st.subheader("Evaporator vibration and tubesheet screening")
+    if isinstance(evap_res, dict) and evap_res:
+        try:
+            evap_shell_id = float(evap_res.get("shell_id_mm", evap_res.get("shell_id_mm_est", 250.0)))
+            evap_tube_od = float(evap_res.get("tube_od_mm", 15.88))
+            evap_tube_id = float(evap_res.get("tube_id_mm", 12.3))
+            evap_baffle = float(evap_res.get("baffle_spacing_mm", 200.0))
+            evap_vshell = float(evap_res.get("shell_velocity_ms", evap_res.get("water_velocity_ms", 0.8)))
+            evap_vib = tube_vibration_screening(evap_tube_od, evap_tube_id, "CuNi 90/10 C70600", evap_baffle, evap_vshell, 1000.0, 25.0, service="liquid")
+            evap_ts = preliminary_tubesheet_screen(evap_shell_id, evap_tube_od, float(st.number_input("Evaporator design pressure for tubesheet screen (bar g)", 1.0, 35.0, 14.0, step=0.5, key="evap_ts_dp")))
+            st.dataframe(mechanical_screen_table(evap_ts, evap_vib), hide_index=True, use_container_width=True)
+            if evap_vib.get("overall_status") != "OK":
+                st.warning(evap_vib.get("guidance"))
+        except Exception as exc:
+            st.warning(f"Evaporator mechanical screening needs complete shell/tube geometry: {exc}")
+    else:
+        st.info("Run the Evaporator tab first to enable evaporator vibration and tubesheet screening.")
+
+    st.subheader("Condenser nozzle sizing (TEMA rho·v² limits)")
+    if isinstance(cond_res, dict) and cond_res:
+        _disc_for_nozzle = None
+        try:
+            if isinstance(comp_res, dict) and not comp_res.get("error"):
+                _disc_for_nozzle = float(comp_res.get("t_discharge_c"))
+        except Exception:
+            pass
+        nset = condenser_nozzle_set(heat_rejection_kw, ref, cond_c,
+                                    float(cond_res.get("water_flow_m3h", 10.0)),
+                                    discharge_temp_c=_disc_for_nozzle)
+        st.dataframe(nozzle_summary_table(nset), hide_index=True, use_container_width=True)
+        st.caption("Impingement, reinforcement pads and nozzle loads remain an ASME/TEMA mechanical design task; sizes above satisfy the momentum limits only.")
+    else:
+        st.info("Run the Condenser tab first to enable nozzle sizing.")
