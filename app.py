@@ -35,7 +35,7 @@ from modules.manufacturing_package import make_csv_zip
 from modules.design_optimizer import condenser_geometry_optimizer
 from modules.validation_benchmarks import run_benchmarks
 
-APP_VERSION = "marine-chiller-suite-v17-merged-engineering-upgrade"
+APP_VERSION = "marine-chiller-suite-v18-drawing-render-fix"
 
 st.set_page_config(page_title="Marine Chiller Design Suite", layout="wide")
 
