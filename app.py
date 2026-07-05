@@ -7,6 +7,8 @@ from modules.compressor import discharge_temperature, compressor_summary_table, 
 from modules.pressure_switch import calculate_pressure_switches
 from modules.condenser import evaluate_condenser, auto_select_tubes
 from modules.evaporator import shell_tube_evaporator_screening, air_cooled_dx_coil_screening, evaporator_table, correlation_audit_table, recommended_improvement_table
+from modules.flooded_evaporator import flooded_evaporator_design
+from modules.evaporative_condenser import evaporative_condenser_design
 from modules.piping import water_piping_summary, refrigerant_line_check
 from modules.electrical import electrical_schedule
 from modules.controls import plc_logic_table
@@ -33,7 +35,7 @@ from modules.manufacturing_package import make_csv_zip
 from modules.design_optimizer import condenser_geometry_optimizer
 from modules.validation_benchmarks import run_benchmarks
 
-APP_VERSION = "marine-chiller-suite-v11-evaporator-inputs-dp-capacity"
+APP_VERSION = "marine-chiller-suite-v12-flooded-evaporator-evaporative-condenser"
 
 st.set_page_config(page_title="Marine Chiller Design Suite", layout="wide")
 
@@ -88,7 +90,7 @@ if "selected_tube" not in st.session_state:
 
 tabs = st.tabs([
     "1 Compressor", "2 Condenser", "3 Evaporator", "4 Pressure Switches", "5 Piping + Valves",
-    "6 Electrical + Controls", "7 Controller I/O + Alarms", "8 Safety + BOM", "9 Drawings", "10 Reports", "11 Compliance + QA", "12 Datasheets + Cost", "13 Service + FAT"
+    "6 Electrical + Controls", "7 Controller I/O + Alarms", "8 Safety + BOM", "9 Drawings", "10 Reports", "11 Compliance + QA", "12 Datasheets + Cost", "13 Service + FAT", "14 Evap Condenser"
 ])
 
 with tabs[0]:
@@ -203,8 +205,58 @@ with tabs[1]:
 
 with tabs[2]:
     st.header("Evaporator module")
-    evap_mode = st.radio("Evaporator type", ["Shell-and-tube water/glycol", "Air-cooled DX coil"], horizontal=True)
-    if evap_mode.startswith("Shell"):
+    evap_mode = st.radio("Evaporator type", ["Shell-and-tube DX water/glycol", "Flooded shell-and-tube", "Air-cooled DX coil"], horizontal=True)
+    if evap_mode.startswith("Flooded"):
+        f1,f2,f3,f4 = st.columns(4)
+        with f1:
+            fl_chw_in = st.number_input("Flooded CHW/glycol entering (°C)", -20.0, 30.0, 12.0, step=0.5)
+            fl_chw_out = st.number_input("Flooded CHW/glycol leaving (°C)", -25.0, 25.0, 7.0, step=0.5)
+        with f2:
+            fl_glycol = st.number_input("Flooded glycol %", 0.0, 60.0, 0.0, step=1.0)
+            fl_water_flow = st.number_input("Flooded water/glycol flow (m³/h, 0 = calculate)", 0.0, 5000.0, 0.0, step=0.1)
+        with f3:
+            fl_tube_count = st.number_input("Flooded tube count", 4, 3000, 100, step=4)
+            fl_tube_len = st.number_input("Flooded tube length (m)", 0.2, 12.0, 1.5, step=0.1)
+        with f4:
+            fl_passes = st.number_input("Flooded water-side passes", 1, 12, 2, step=1)
+            fl_level = st.number_input("Refrigerant liquid level (% shell dia)", 25.0, 85.0, 55.0, step=5.0)
+        with st.expander("Flooded evaporator geometry, boiling and oil-return inputs", expanded=True):
+            fg1,fg2,fg3,fg4 = st.columns(4)
+            with fg1:
+                fl_tube_od = st.selectbox("Flooded tube OD", ["5/8 in", "3/4 in", "1 in"], index=0)
+                fl_tube_od_mm = {"5/8 in":15.88, "3/4 in":19.05, "1 in":25.4}[fl_tube_od]
+                fl_wall = st.number_input("Flooded tube wall (mm)", 0.25, 3.0, 0.8, step=0.05)
+            with fg2:
+                fl_pitch_ratio = st.number_input("Flooded tube pitch ratio", 1.10, 2.00, 1.25, step=0.05)
+                fl_shell_id = st.number_input("Flooded shell ID override (mm, 0 = estimate)", 0.0, 3000.0, 0.0, step=10.0)
+            with fg3:
+                fl_enh = st.number_input("Flooded enhanced boiling multiplier", 1.0, 6.0, 1.8, step=0.1)
+                fl_shell_allow = st.number_input("Shell length allowance beyond tubes (m)", 0.05, 2.0, 0.25, step=0.05)
+            with fg4:
+                fl_max_wdp = st.number_input("Flooded max water ΔP (kPa)", 1.0, 500.0, 80.0, step=5.0)
+                fl_oil = st.selectbox("Oil return strategy", ["Oil pot / eductor return", "Jet pump oil return", "Skimmer with oil rectifier", "Not yet defined"], index=0)
+        evap_res = flooded_evaporator_design(
+            capacity_kw=cooling_kw, refrigerant=ref, evap_temp_c=evap_c,
+            chw_in_c=fl_chw_in, chw_out_c=fl_chw_out, fluid="Water/Glycol", glycol_pct=fl_glycol,
+            water_flow_m3h_input=(fl_water_flow or None), tube_od_mm=fl_tube_od_mm, tube_wall_mm=fl_wall,
+            tube_length_m=fl_tube_len, tube_count=int(fl_tube_count), tube_passes=int(fl_passes),
+            pitch_ratio=fl_pitch_ratio, shell_id_mm=(fl_shell_id or None), shell_length_allowance_m=fl_shell_allow,
+            liquid_level_pct_shell_dia=fl_level, enhanced_boiling_multiplier=fl_enh,
+            max_water_dp_kpa=fl_max_wdp, oil_return_type=fl_oil
+        )
+        k1,k2,k3,k4 = st.columns(4)
+        k1.metric("Flooded CHW flow", f"{evap_res.get('water_flow_m3h',0):.2f} m³/h")
+        k2.metric("Water velocity", f"{evap_res.get('water_velocity_ms',0):.2f} m/s", evap_res.get('water_velocity_status',''))
+        k3.metric("Water ΔP", f"{evap_res.get('water_dp_kpa',0):.1f} kPa", evap_res.get('water_dp_status',''))
+        k4.metric("Refrigerant charge", f"{evap_res.get('estimated_refrigerant_charge_kg',0):.1f} kg")
+        h1,h2,h3,h4 = st.columns(4)
+        h1.metric("Uo", f"{evap_res.get('Uo_w_m2k',0):.0f} W/m²K")
+        h2.metric("Boiling HTC", f"{evap_res.get('shell_side_boiling_htc_w_m2k',0):.0f} W/m²K")
+        h3.metric("Q possible", f"{evap_res.get('capacity_possible_kw',0):.1f} kW")
+        h4.metric("Status", str(evap_res.get('status','')))
+        st.warning(str(evap_res.get('warnings','None'))) if evap_res.get('warnings') != 'None' else st.success("No major flooded-evaporator warnings from screening.")
+        st.info(str(evap_res.get('guidance','')))
+    elif evap_mode.startswith("Shell"):
         e1,e2,e3,e4 = st.columns(4)
         with e1:
             chw_in = st.number_input("CHW/glycol entering cooler (°C)", -20.0, 30.0, 12.0, step=0.5)
@@ -442,6 +494,7 @@ with tabs[9]:
         "Pressure Settings": ps_df if 'ps_df' in globals() else pd.DataFrame(),
         "Condenser": pd.DataFrame([[k,v] for k,v in (cond_res if 'cond_res' in globals() else {}).items()], columns=["Parameter","Value"]),
         "Evaporator": evaporator_table(evap_res) if 'evap_res' in globals() else pd.DataFrame(),
+        "Evaporative Condenser": pd.DataFrame([[k,v] for k,v in (evap_cond_res if 'evap_cond_res' in globals() else {}).items()], columns=["Parameter","Value"]),
         "Electrical": elec_df if 'elec_df' in globals() else pd.DataFrame(),
         "PLC Logic": plc_df if 'plc_df' in globals() else pd.DataFrame(),
         "Controller IO": io_df if 'io_df' in globals() else pd.DataFrame(),
@@ -535,5 +588,61 @@ with tabs[12]:
     fat_df = factory_acceptance_tests()
     st.dataframe(fat_df, hide_index=True, use_container_width=True)
     st.info("These are generic manufacturing/commissioning checklists. Add project-specific class society hold points, client ITP requirements and pressure-vessel inspection steps before issuing for manufacture.")
+
+
+
+with tabs[13]:
+    st.header("Evaporative condenser / closed-circuit condenser module")
+    st.caption("This module uses the cooling-tower/evaporative-fluid-cooler Merkel concept with a coil area and spray-water circuit. Calibrate K and U against vendor data before manufacture.")
+    ec1,ec2,ec3,ec4 = st.columns(4)
+    with ec1:
+        ec_db = st.number_input("Evap condenser entering air DB (°C)", -10.0, 60.0, 35.0, step=0.5)
+        ec_wb = st.number_input("Evap condenser entering air WB (°C)", -10.0, 45.0, 28.0, step=0.5)
+    with ec2:
+        ec_air_mode = st.radio("Evap condenser air input", ["Face velocity", "Air flow"], horizontal=True)
+        ec_face_v = st.number_input("Evap condenser face velocity (m/s)", 0.5, 6.0, 2.5, step=0.1)
+        ec_air_flow = st.number_input("Evap condenser air flow (m³/s)", 0.0, 500.0, 0.0, step=0.5, disabled=(ec_air_mode=="Face velocity"))
+    with ec3:
+        ec_face_w = st.number_input("Evap condenser coil face width (m)", 0.2, 20.0, 1.5, step=0.1)
+        ec_face_h = st.number_input("Evap condenser coil face height (m)", 0.2, 20.0, 1.5, step=0.1)
+    with ec4:
+        ec_tubes = st.number_input("Evap condenser tube count", 1, 5000, 120, step=4)
+        ec_tube_len = st.number_input("Evap condenser tube length (m)", 0.2, 20.0, 1.5, step=0.1)
+    with st.expander("Evaporative condenser coil, spray and fan inputs", expanded=True):
+        eca,ecb,ecc,ecd = st.columns(4)
+        with eca:
+            ec_tube_od = st.selectbox("Evap condenser tube OD", ["5/8 in", "3/4 in", "1 in"], index=1)
+            ec_tube_od_mm = {"5/8 in":15.88, "3/4 in":19.05, "1 in":25.4}[ec_tube_od]
+            ec_rows = st.number_input("Evap condenser rows in air depth", 1, 20, 6, step=1)
+        with ecb:
+            ec_area_override = st.number_input("Coil outside area override (m², 0 = from tubes)", 0.0, 10000.0, 0.0, step=1.0)
+            ec_K = st.number_input("Merkel K (kg/s·m²)", 0.0001, 0.0100, 0.0015, step=0.0001, format="%.4f")
+        with ecc:
+            ec_U = st.number_input("Overall U dry/wet basis (W/m²K)", 50.0, 3000.0, 450.0, step=25.0)
+            ec_spray = st.number_input("Spray rate (m³/h·m² plan)", 1.0, 20.0, 6.0, step=0.5)
+        with ecd:
+            ec_static = st.number_input("Fan static pressure (Pa)", 20.0, 1000.0, 180.0, step=10.0)
+            ec_cycles = st.number_input("Cycles of concentration", 1.5, 10.0, 3.0, step=0.5)
+    evap_cond_res = evaporative_condenser_design(
+        heat_rejection_kw=heat_rejection_kw, refrigerant=ref, condensing_temp_c=cond_c,
+        ambient_db_c=ec_db, ambient_wb_c=ec_wb, coil_area_m2=(ec_area_override or None),
+        tube_od_mm=ec_tube_od_mm, tube_length_m=ec_tube_len, tube_count=int(ec_tubes), rows_depth=int(ec_rows),
+        face_width_m=ec_face_w, face_height_m=ec_face_h,
+        air_flow_m3s=(ec_air_flow if ec_air_mode=="Air flow" and ec_air_flow>0 else None), face_velocity_ms=ec_face_v,
+        spray_rate_m3h_m2=ec_spray, k_merkel_kg_s_m2=ec_K, overall_u_w_m2k_dry_basis=ec_U,
+        fan_static_pa=ec_static, cycles_of_concentration=ec_cycles
+    )
+    c1,c2,c3,c4 = st.columns(4)
+    c1.metric("Required heat rejection", f"{evap_cond_res.get('heat_rejection_required_kw',0):.1f} kW")
+    c2.metric("Possible heat rejection", f"{evap_cond_res.get('heat_rejection_possible_kw',0):.1f} kW")
+    c3.metric("Condensing-WB approach", f"{evap_cond_res.get('condensing_to_wb_approach_k',0):.1f} K")
+    c4.metric("Status", str(evap_cond_res.get('status','')))
+    d1,d2,d3,d4 = st.columns(4)
+    d1.metric("Air flow", f"{evap_cond_res.get('air_flow_m3s',0):.2f} m³/s")
+    d2.metric("Spray water", f"{evap_cond_res.get('spray_water_flow_m3h',0):.2f} m³/h")
+    d3.metric("Make-up water", f"{evap_cond_res.get('makeup_water_m3h',0):.2f} m³/h")
+    d4.metric("Fan + pump", f"{evap_cond_res.get('fan_power_kw',0)+evap_cond_res.get('spray_pump_power_kw',0):.2f} kW")
+    st.dataframe(pd.DataFrame([[k,v] for k,v in evap_cond_res.items()], columns=["Parameter","Value"]), hide_index=True, use_container_width=True)
+    st.info(str(evap_cond_res.get('guidance','')))
 
 st.caption("Preliminary engineering tool only. Final pressure vessel, electrical, refrigeration and marine compliance design must be checked by qualified engineers and equipment suppliers.")

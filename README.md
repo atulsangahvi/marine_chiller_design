@@ -151,3 +151,61 @@ The evaporator tab now has expanded inputs and outputs for both shell-and-tube a
 - Output includes face velocity, air pressure drop, refrigerant pressure drop, estimated refrigerant path length, effective evaporation temperature after DP and expected operating issue if DP is high.
 
 These calculations are still screening calculations. For production coil manufacture, use the standalone detailed air-cooled evaporator engine and validate against manufacturer/test data.
+
+## v12 update — flooded evaporator and evaporative condenser
+
+This version adds two major modules.
+
+### Flooded shell-and-tube evaporator
+
+Use the **Evaporator** tab and select **Flooded shell-and-tube**.
+
+The module assumes:
+- Water/glycol inside tubes.
+- Refrigerant boiling on the shell side.
+- User-entered refrigerant liquid level as a percentage of shell diameter.
+- Cooper pool-boiling as the base shell-side boiling HTC.
+- User-visible enhanced boiling multiplier for GEWA-B/Turbo-B or other enhanced flooded evaporator tubes.
+
+Main outputs include:
+- Water/glycol flow rate.
+- Water velocity and Reynolds number.
+- Water-side pressure drop.
+- Shell-side boiling HTC.
+- Uo.
+- LMTD and leaving approach.
+- Q possible versus required capacity.
+- Estimated refrigerant charge.
+- Vapor disengagement space.
+- Shell-side refrigerant pressure-drop allowance and equivalent evaporating-temperature loss.
+- Oil-return strategy warning.
+
+### Evaporative condenser / closed-circuit condenser
+
+Use tab **14 Evap Condenser**.
+
+This module is based on the cooling-tower and evaporative-fluid-cooler logic you provided. It uses:
+- DB/WB psychrometrics.
+- Merkel enthalpy driving force.
+- Coil outside area.
+- Spray-water rate.
+- Fan static pressure.
+- Makeup water, evaporation loss, drift and blowdown estimates.
+
+Main outputs include:
+- Required and possible heat rejection.
+- Condensing-to-wet-bulb approach.
+- Coil area.
+- Air flow and face velocity.
+- Spray-water flow.
+- Evaporation loss, blowdown and make-up water.
+- Fan and spray-pump power.
+- Guidance for improving short designs.
+
+### Engineering caution
+
+Both new modules are **preliminary design/screening tools**. Before manufacturing, validate:
+- Flooded evaporator tube boiling performance with tube supplier data or test data.
+- Refrigerant charge and oil return.
+- Evaporative condenser Merkel K and U values against a vendor selection.
+- Fan, spray nozzles, drift eliminator, casing and water-treatment design.
